@@ -20,27 +20,12 @@
 // (prescriptions.functions.ts) has been migrated off Supabase onto
 // companyProviderApi() below.
 
+import { createMockOrder, listMockOrders, type MockOrderItem } from "./mock-orders.server";
+
 const COMPANY_API_BASE_URL = process.env["COMPANY_API_BASE_URL"];
 const PROVIDER_API_BASE_URL = process.env["PROVIDER_API_BASE_URL"];
 
 type CompanyEnvelope<T> = { status: number; message: string; data?: T };
-
-// Shared mock order ids/amounts — used by companyProviderApi()'s fake
-// "Recent orders" list below AND by payments.functions.ts's mocked
-// startPayment(), so "Pay now" on a mock order shows a matching amount.
-// Real UUID shape since submitPrescription/startPayment validate
-// prescriptionId/serviceProviderId with z.string().uuid(). Order 1 is the
-// only one left "pending" — the other three are already "paid" so their
-// fulfillment stage (dispatched/shipped/delivered) can be demoed without
-// needing to run the payment flow again.
-export const MOCK_PRESCRIPTION_1_ID = "11111111-1111-4111-8111-111111111111";
-export const MOCK_PRESCRIPTION_1_AMOUNT = 348.5;
-export const MOCK_PRESCRIPTION_2_ID = "22222222-2222-4222-8222-222222222222";
-export const MOCK_PRESCRIPTION_2_AMOUNT = 612;
-export const MOCK_PRESCRIPTION_3_ID = "33333333-3333-4333-8333-333333333333";
-export const MOCK_PRESCRIPTION_3_AMOUNT = 275;
-export const MOCK_PRESCRIPTION_4_ID = "44444444-4444-4444-8444-444444444444";
-export const MOCK_PRESCRIPTION_4_AMOUNT = 540;
 
 // NETWORK CALL DISABLED — requireSession() below no longer routes through
 // this function (it returns a mock user directly), so nothing currently
@@ -85,71 +70,60 @@ async function companyApi<T = unknown>(
  * itself — setting one manually would drop that boundary and break the
  * upload. Used by submitPrescription/listPrescriptions in
  * prescriptions.functions.ts to call POST/GET /pharmacy-orders. */
-// NETWORK CALL DISABLED — returns canned pharmacy-order data instead of
-// calling the real providerService. Real fetch commented out below.
+// NETWORK CALL DISABLED — backed by the in-memory store in
+// mock-orders.server.ts instead of calling the real providerService, so a
+// submission and a payment actually change what listPrescriptions returns
+// afterward. Real fetch commented out below.
 export async function companyProviderApi<T = unknown>(
   path: string,
   init: { method?: string; token: string; formData?: FormData },
 ): Promise<T> {
   const method = init.method ?? "GET";
   if (path === "/pharmacy-orders" && method === "POST") {
+    const form = init.formData;
+    const patientId = String(form?.get("patientId") ?? "");
+    const patientName = (form?.get("patientName") as string | null) || null;
+    const doctorName = (form?.get("doctorName") as string | null) || null;
+    const notes = (form?.get("notes") as string | null) || null;
+    let items: MockOrderItem[] = [];
+    try {
+      const raw = form?.get("items");
+      if (typeof raw === "string") items = JSON.parse(raw) as MockOrderItem[];
+    } catch {
+      // Malformed/absent — fall back to no line items rather than failing the submission.
+    }
+
+    const order = createMockOrder({ patientId, patientName, doctorName, notes, items });
     return {
-      id: `mock-order-${Date.now()}`,
-      status: "booked",
-      orderedAt: new Date().toISOString(),
-      requestedAmount: null,
-      fileUrl: null,
-      paymentStatus: "pending",
-      paidAt: null,
+      id: order.id,
+      status: order.status,
+      orderedAt: order.orderedAt,
+      requestedAmount: order.requestedAmount,
+      fileUrl: order.fileUrl,
+      paymentStatus: order.paymentStatus,
+      paidAt: order.paidAt,
     } as T;
   }
-  // GET /pharmacy-orders?patientId=... (listPrescriptions) — four fake
-  // orders spanning both payment states (pending/paid) and every
-  // fulfillment stage (booked/dispatched/shipped/delivered), so the
-  // "Recent orders" list demos the full range of what OrderTracker
-  // (home.tsx) and the payment badge can show.
-  const now = Date.now();
-  const day = 24 * 60 * 60 * 1000;
+
+  // GET /pharmacy-orders?patientId=... (listPrescriptions)
+  const patientId = new URL(path, "https://mock.local").searchParams.get("patientId") ?? "";
+  const list = listMockOrders(patientId);
   return {
-    data: [
-      {
-        id: MOCK_PRESCRIPTION_1_ID,
-        status: "booked",
-        orderedAt: new Date(now - 2 * day).toISOString(),
-        requestedAmount: MOCK_PRESCRIPTION_1_AMOUNT,
-        fileUrl: null,
-        paymentStatus: "pending",
-        paidAt: null,
-      },
-      {
-        id: MOCK_PRESCRIPTION_2_ID,
-        status: "dispatched",
-        orderedAt: new Date(now - 6 * day).toISOString(),
-        requestedAmount: MOCK_PRESCRIPTION_2_AMOUNT,
-        fileUrl: null,
-        paymentStatus: "paid",
-        paidAt: new Date(now - 5 * day).toISOString(),
-      },
-      {
-        id: MOCK_PRESCRIPTION_3_ID,
-        status: "shipped",
-        orderedAt: new Date(now - 9 * day).toISOString(),
-        requestedAmount: MOCK_PRESCRIPTION_3_AMOUNT,
-        fileUrl: null,
-        paymentStatus: "paid",
-        paidAt: new Date(now - 8 * day).toISOString(),
-      },
-      {
-        id: MOCK_PRESCRIPTION_4_ID,
-        status: "delivered",
-        orderedAt: new Date(now - 14 * day).toISOString(),
-        requestedAmount: MOCK_PRESCRIPTION_4_AMOUNT,
-        fileUrl: null,
-        paymentStatus: "paid",
-        paidAt: new Date(now - 13 * day).toISOString(),
-      },
-    ],
-    count: 4,
+    data: list.map((o) => ({
+      id: o.id,
+      status: o.status,
+      orderedAt: o.orderedAt,
+      requestedAmount: o.requestedAmount,
+      fileUrl: o.fileUrl,
+      paymentStatus: o.paymentStatus,
+      paidAt: o.paidAt,
+      patientId: o.patientId,
+      patientName: o.patientName,
+      doctorName: o.doctorName,
+      notes: o.notes,
+      items: o.items,
+    })),
+    count: list.length,
   } as T;
 
   // if (!PROVIDER_API_BASE_URL) {
@@ -194,10 +168,14 @@ export type PortalUser = { id: string; phone: string; full_name: string | null }
 // bypass will 400 at the backend even though the request reaches it. This
 // is a known limitation of the bypass, not a bug in submitPrescription.
 const DEV_BYPASS_TOKEN = "dev-bypass-token";
+// id matches MOCK_USER_ID in company-auth.client.ts (the client-side mock
+// getMe()/profile identity) and the seed data in mock-orders.server.ts, so
+// the same mock "Test User" identity is consistent client- and server-side
+// — mock-orders.server.ts's listMockOrders(patientId) filters by this id.
 const DEV_BYPASS_USER: PortalUser = {
-  id: "dev-bypass-user",
-  phone: "0000000000",
-  full_name: "Dev Bypass User",
+  id: "mock-user-id",
+  phone: "9999999999",
+  full_name: "Test User",
 };
 
 /** Validates an access token against the company backend and maps its profile

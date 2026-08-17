@@ -1,37 +1,26 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 
-import {
-  MOCK_PRESCRIPTION_1_AMOUNT,
-  MOCK_PRESCRIPTION_1_ID,
-  MOCK_PRESCRIPTION_2_AMOUNT,
-  MOCK_PRESCRIPTION_2_ID,
-  MOCK_PRESCRIPTION_3_AMOUNT,
-  MOCK_PRESCRIPTION_3_ID,
-  MOCK_PRESCRIPTION_4_AMOUNT,
-  MOCK_PRESCRIPTION_4_ID,
-  requireSession,
-} from "./portal-auth.server";
-
-const MOCK_AMOUNT_BY_ID: Record<string, number> = {
-  [MOCK_PRESCRIPTION_1_ID]: MOCK_PRESCRIPTION_1_AMOUNT,
-  [MOCK_PRESCRIPTION_2_ID]: MOCK_PRESCRIPTION_2_AMOUNT,
-  [MOCK_PRESCRIPTION_3_ID]: MOCK_PRESCRIPTION_3_AMOUNT,
-  [MOCK_PRESCRIPTION_4_ID]: MOCK_PRESCRIPTION_4_AMOUNT,
-};
+import { requireSession } from "./portal-auth.server";
+import { getMockOrder, markMockOrderPaid } from "./mock-orders.server";
 
 /** Creates a Razorpay order for a prescription the pharmacy has quoted.
  *
  * NETWORK CALL DISABLED — skips the Supabase lookup and the real Razorpay
- * order creation, returning a canned order instead. Real implementation
- * commented out below. */
+ * order creation, returning a canned order instead, priced from the mock
+ * order's actual requestedAmount (see mock-orders.server.ts) so a newly
+ * submitted order's own auto-quote is what gets charged, not a hardcoded
+ * figure. Real implementation commented out below. */
 export const startPayment = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) =>
     z.object({ token: z.string().min(10), prescriptionId: z.string().uuid() }).parse(d),
   )
   .handler(async ({ data }) => {
     await requireSession(data.token);
-    const amount = MOCK_AMOUNT_BY_ID[data.prescriptionId] ?? MOCK_PRESCRIPTION_1_AMOUNT;
+    const order = getMockOrder(data.prescriptionId);
+    if (!order) throw new Error("Order not found");
+    if (order.paymentStatus === "paid") throw new Error("This order is already paid");
+    const amount = order.requestedAmount ?? 0;
 
     return {
       orderId: `mock_order_${data.prescriptionId.slice(0, 8)}`,
@@ -71,8 +60,9 @@ export const startPayment = createServerFn({ method: "POST" })
 /** Confirms a completed Razorpay checkout and marks the order as paid.
  *
  * NETWORK CALL DISABLED — skips the Supabase lookup and the real signature
- * verification, always reporting success. Real implementation commented out
- * below. */
+ * verification, but does actually flip the mock order's payment/fulfillment
+ * state (see markMockOrderPaid in mock-orders.server.ts) so "Recent orders"
+ * reflects it on the next refetch. Real implementation commented out below. */
 export const confirmPayment = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) =>
     z
@@ -87,6 +77,8 @@ export const confirmPayment = createServerFn({ method: "POST" })
   )
   .handler(async ({ data }) => {
     await requireSession(data.token);
+    const order = markMockOrderPaid(data.prescriptionId);
+    if (!order) throw new Error("Order not found");
     return { ok: true };
 
     // const db = await admin();

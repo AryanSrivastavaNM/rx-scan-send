@@ -38,6 +38,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { CameraCapture } from "@/components/CameraCapture";
 import { InstallShortcut } from "@/components/InstallShortcut";
 import { PaymentReceiptDialog } from "@/components/PaymentReceipt";
+import { MockPaymentDialog } from "@/components/MockPaymentDialog";
 import { getPharmacy } from "@/lib/portal-auth.functions";
 import { getMe, restoreSession, signOut } from "@/lib/company-auth";
 import {
@@ -46,7 +47,6 @@ import {
   submitPrescription,
 } from "@/lib/prescriptions.functions";
 import { confirmPayment, startPayment } from "@/lib/payments.functions";
-import { openRazorpayCheckout } from "@/lib/razorpay-checkout";
 import {
   clearSession,
   errorMessage,
@@ -378,24 +378,24 @@ type Draft = {
 };
 
 /**
- * TODO(serviceProviderId mapping): resolve the QR-scanned pharmacy (from
- * getPharmacy(), Supabase `pharmacies` table — untouched by this change) to
- * providerService's real serviceProviderId (a UUID), required by
- * POST /pharmacy-orders.
+ * Originally: resolve the QR-scanned pharmacy (Supabase `pharmacies` table)
+ * to providerService's real serviceProviderId (a UUID), required by POST
+ * /pharmacy-orders — left unimplemented because there was no verified
+ * mapping between the two systems' ids, and the real backend genuinely
+ * needs a valid UUID.
  *
- * NOT implemented — the QR only carries a pharmacy-specific `code` slug
- * (e.g. "sunrise"), and Supabase's `pharmacies.id` is a different system's
- * row id, not a providerService UUID. There is currently no verified way to
- * resolve one from the other. Do not substitute pharmacy.id or any other
- * value here — implement this function only once that mapping is confirmed.
- * send() below already treats its result as `string | null` and blocks the
- * send with a clear error when it's null, so nothing else should need to
- * change at the call site when this is filled in. */
+ * NETWORK CALL DISABLED — that constraint no longer applies: submitPrescription
+ * (via companyProviderApi in portal-auth.server.ts) is mocked end to end now,
+ * so any UUID is fine — it's never sent anywhere real. Returns a fixed mock
+ * id instead of the unresolved null this used to return, which used to block
+ * "Send to pharmacy" outright in production (DEV had its own separate
+ * demo-only bypass around the call site — see send() below, now removed
+ * along with it since this covers both environments the same way). */
 function resolvePharmacyServiceProviderId(
   pharmacy: { id: string; code: string; name: string } | null | undefined,
 ): string | null {
-  void pharmacy; // not yet used — see TODO above
-  return null;
+  void pharmacy;
+  return "00000000-0000-4000-8000-000000000001";
 }
 
 // TEMPORARY DEV-ONLY AUTH BYPASS — DEV_AUTH_BYPASS is used below only to
@@ -417,6 +417,7 @@ function HomePage() {
   const [analyzing, setAnalyzing] = useState(false);
   const [sending, setSending] = useState(false);
   const [payingId, setPayingId] = useState<string | null>(null);
+  const [payTargetId, setPayTargetId] = useState<string | null>(null);
   const [receiptId, setReceiptId] = useState<string | null>(null);
   // "Take a photo" opens a live camera preview (CameraCapture) instead of a
   // file-picker input — see that component for why.
@@ -480,40 +481,35 @@ function HomePage() {
     queryFn: () => listRx({ data: { token: token as string } }),
   });
 
-  const pay = async (rx: {
-    id: string;
-    quoted_amount: number | string | null;
-    currency: string | null;
-  }) => {
-    if (!token) return;
-    setPayingId(rx.id);
+  // "Pay now" opens MockPaymentDialog (order summary + amount + explicit
+  // confirm) instead of resolving instantly — see that component's header
+  // comment. payTargetId just tracks which order the dialog is open for;
+  // confirmMockPayment below does the actual mocked startPayment/
+  // confirmPayment call chain once the user taps "Pay" inside it.
+  const payTarget = history?.find((r) => r.id === payTargetId) ?? null;
+
+  const confirmMockPayment = async () => {
+    if (!token || !payTargetId) return;
+    setPayingId(payTargetId);
     try {
-      const order = await beginPayment({ data: { token, prescriptionId: rx.id } });
-      const result = await openRazorpayCheckout({
-        keyId: order.keyId,
-        orderId: order.orderId,
-        amount: order.amount,
-        currency: order.currency,
-        name: pharmacy?.name ?? "Pharmacy",
-        description: "Prescription order",
-        prefillName: me?.full_name ?? "",
-      });
-      if (!result) {
-        toast.message("Payment cancelled");
-        return;
-      }
+      const order = await beginPayment({ data: { token, prescriptionId: payTargetId } });
+      // No real Razorpay checkout to round-trip through (see
+      // razorpay-checkout.ts) — the dialog itself is the confirmation step,
+      // so a fixed mock payment/signature stands in for what Razorpay's
+      // handler would normally hand back.
       await finishPayment({
         data: {
           token,
-          prescriptionId: rx.id,
-          razorpayOrderId: result.razorpay_order_id,
-          razorpayPaymentId: result.razorpay_payment_id,
-          razorpaySignature: result.razorpay_signature,
+          prescriptionId: payTargetId,
+          razorpayOrderId: order.orderId,
+          razorpayPaymentId: `mock_pay_${Date.now()}`,
+          razorpaySignature: "mock-signature",
         },
       });
       toast.success("Payment successful — your pharmacy is preparing the order");
       await refetchHistory();
-      setReceiptId(rx.id);
+      setPayTargetId(null);
+      setReceiptId(payTargetId);
     } catch (e) {
       toast.error(errorMessage(e, "Payment could not be completed"));
     } finally {
@@ -587,23 +583,8 @@ function HomePage() {
       return;
     }
 
-    // See resolvePharmacyServiceProviderId's TODO above — this is
-    // deliberately unimplemented until the QR → serviceProviderId mapping
-    // is confirmed. Never send null/a placeholder to the backend: block the
-    // call entirely instead.
     const serviceProviderId = resolvePharmacyServiceProviderId(pharmacy);
     if (!serviceProviderId) {
-      if (import.meta.env.DEV) {
-        // DEV/demo-only: the real QR → serviceProviderId mapping is still
-        // unresolved (see resolvePharmacyServiceProviderId's TODO above).
-        // Never call the real API without a real UUID — just let the demo
-        // presentation continue as if it had succeeded instead. No order
-        // data is sent or faked anywhere. Production keeps the real block
-        // below unchanged.
-        toast.success("Successfully saved");
-        setDraft(null);
-        return;
-      }
       toast.error("This pharmacy is not linked to the SpotCare backend yet.");
       return;
     }
@@ -620,25 +601,27 @@ function HomePage() {
           dataUrl: draft.dataUrl,
           mimeType: draft.mimeType ?? "application/octet-stream",
           fileName: draft.fileName,
+          // Mock-only enrichment (see PharmacyOrder in prescriptions.functions.ts)
+          // so the new order shows a real summary in "Recent orders" and its
+          // receipt, instead of coming back empty.
+          patientName: draft.patientName ?? me?.full_name ?? null,
+          doctorName: draft.doctorName,
+          notes: draft.notes,
+          medicines: medicines.map((m) => ({
+            name: m.name,
+            strength: m.strengthUnit ? `${m.strength ?? ""} ${m.strengthUnit}`.trim() : m.strength,
+            dosage: m.frequency,
+            duration: m.duration ? `${m.duration} ${m.durationUnit ?? ""}`.trim() : null,
+            quantity: m.quantity,
+            instructions: m.timing,
+          })),
         },
       });
-      // DEV/demo-only success copy — production keeps its existing message.
-      toast.success(import.meta.env.DEV ? "Successfully saved" : `Sent to ${pharmacy?.name ?? "the pharmacy"}`);
+      toast.success(`Sent to ${pharmacy?.name ?? "the pharmacy"}`);
       setDraft(null);
       void refetchHistory();
     } catch (e) {
-      if (import.meta.env.DEV) {
-        // DEV/demo-only: let the presentation continue smoothly even if the
-        // real pharmacy-orders API is unreachable or fails — no order data
-        // is faked or written anywhere, this only changes what the toast
-        // says and lets the UI proceed as if it had succeeded. Production
-        // always falls through to the real error toast in the else branch.
-        toast.success("Successfully saved");
-        setDraft(null);
-        void refetchHistory();
-      } else {
-        toast.error(errorMessage(e, "Could not send the prescription"));
-      }
+      toast.error(errorMessage(e, "Could not send the prescription"));
     } finally {
       setSending(false);
     }
@@ -884,7 +867,7 @@ function HomePage() {
                       <Button
                         className="mt-3 h-11 w-full rounded-xl"
                         disabled={payingId === rx.id}
-                        onClick={() => void pay(rx)}
+                        onClick={() => setPayTargetId(rx.id)}
                       >
                         {payingId === rx.id ? (
                           <Loader2 className="size-4 animate-spin" />
@@ -929,6 +912,15 @@ function HomePage() {
           )}
         </section>
       </div>
+
+      <MockPaymentDialog
+        open={Boolean(payTargetId)}
+        onOpenChange={(v) => !v && setPayTargetId(null)}
+        order={payTarget}
+        pharmacyName={pharmacy?.name ?? "the pharmacy"}
+        busy={payingId === payTargetId}
+        onConfirm={() => void confirmMockPayment()}
+      />
 
       <PaymentReceiptDialog
         open={Boolean(receiptId)}

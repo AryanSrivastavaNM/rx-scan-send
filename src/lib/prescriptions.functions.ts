@@ -32,11 +32,21 @@ export const analyzePrescription = createServerFn({ method: "POST" })
  * branch — presignOrder() strips s3Key and adds fileUrl). Only the fields
  * this app actually reads are declared here.
  *
- * paymentStatus/paidAt are NOT part of the real providerService response —
- * they only exist on the mocked companyProviderApi() data (see
- * portal-auth.server.ts) so listPrescriptions below can surface a
- * pending/paid demo state. Optional here so real (unmocked) responses,
- * which never include them, still type-check. */
+ * paymentStatus/paidAt/patientId/patientName/doctorName/notes/items are NOT
+ * part of the real providerService response — they only exist on the mocked
+ * companyProviderApi() data (see portal-auth.server.ts / mock-orders.server.ts)
+ * so listPrescriptions below can surface a real order summary + payment
+ * state. Optional here so real (unmocked) responses, which never include
+ * them, still type-check. */
+type PharmacyOrderItem = {
+  name: string;
+  strength: string | null;
+  dosage: string | null;
+  duration: string | null;
+  quantity: string | null;
+  instructions: string | null;
+};
+
 type PharmacyOrder = {
   id: string;
   status: string;
@@ -45,7 +55,21 @@ type PharmacyOrder = {
   fileUrl: string | null;
   paymentStatus?: "pending" | "paid";
   paidAt?: string | null;
+  patientId?: string | null;
+  patientName?: string | null;
+  doctorName?: string | null;
+  notes?: string | null;
+  items?: PharmacyOrderItem[];
 };
+
+const medicineSchema = z.object({
+  name: z.string(),
+  strength: z.string().nullable(),
+  dosage: z.string().nullable(),
+  duration: z.string().nullable(),
+  quantity: z.string().nullable(),
+  instructions: z.string().nullable(),
+});
 
 export const submitPrescription = createServerFn({ method: "POST" })
   .inputValidator((d: unknown) =>
@@ -56,6 +80,13 @@ export const submitPrescription = createServerFn({ method: "POST" })
         dataUrl: z.string().min(30).max(14_000_000),
         mimeType: z.string().max(100),
         fileName: z.string().max(200),
+        // Only used to enrich the mock order store (see PharmacyOrder above)
+        // — the real providerService contract has no place for these on
+        // POST /pharmacy-orders, it only wants the raw file.
+        patientName: z.string().nullable().optional(),
+        doctorName: z.string().nullable().optional(),
+        notes: z.string().nullable().optional(),
+        medicines: z.array(medicineSchema).optional(),
       })
       .parse(d),
   )
@@ -68,6 +99,10 @@ export const submitPrescription = createServerFn({ method: "POST" })
     const formData = new FormData();
     formData.append("serviceProviderId", data.serviceProviderId);
     formData.append("patientId", user.id);
+    formData.append("patientName", data.patientName ?? user.full_name ?? "");
+    formData.append("doctorName", data.doctorName ?? "");
+    formData.append("notes", data.notes ?? "");
+    formData.append("items", JSON.stringify(data.medicines ?? []));
     // The ORIGINAL uploaded/captured prescription file, exactly as picked by
     // the user — not the OCR result, not a regenerated document.
     // appointmentsId / totalAmount / requestedAmount are deliberately
@@ -96,23 +131,23 @@ export const listPrescriptions = createServerFn({ method: "POST" })
 
     // Mapped into the row shape the UI already expects (home.tsx's "Recent
     // orders" list, PaymentReceiptDialog) from the previous Supabase-backed
-    // `prescriptions` table. providerService's pharmacy-orders don't carry
-    // medicine/patient/doctor fields — those lived only in the now-replaced
-    // Supabase schema — so those come back null/empty here rather than
-    // invented. quoted_amount is wired to the real requestedAmount the
-    // pharmacy sets. payment_status/paid_at come from the mock's
-    // paymentStatus/paidAt (see PharmacyOrder above) when present — a real
-    // providerService response never sets them, so this stays null there,
-    // same as before. razorpay_* still stay null either way: nothing in the
-    // UI reads them directly.
+    // `prescriptions` table. A real (unmocked) providerService response
+    // doesn't carry medicine/patient/doctor/payment fields — those lived
+    // only in the now-replaced Supabase schema — so those fall back to
+    // null/empty in that case. Against the mock (see PharmacyOrder above),
+    // patient_id/patient_name/doctor_name/notes/prescription_items/
+    // payment_status/paid_at all come through with real values captured at
+    // submission time (or the seed data). razorpay_* stay null either way:
+    // nothing in the UI reads them directly.
     return (result.data ?? []).map((o) => ({
       id: o.id,
       status: o.status,
       created_at: o.orderedAt,
-      doctor_name: null as string | null,
-      patient_name: null as string | null,
+      patient_id: o.patientId ?? (null as string | null),
+      doctor_name: o.doctorName ?? (null as string | null),
+      patient_name: o.patientName ?? (null as string | null),
       source: null as "upload" | "camera" | null,
-      notes: null as string | null,
+      notes: o.notes ?? (null as string | null),
       quoted_amount: o.requestedAmount ?? null,
       currency: "INR" as string | null,
       pharmacy_message: null as string | null,
@@ -120,7 +155,7 @@ export const listPrescriptions = createServerFn({ method: "POST" })
       paid_at: o.paidAt ?? (null as string | null),
       razorpay_order_id: null as string | null,
       razorpay_payment_id: null as string | null,
-      prescription_items: [] as {
+      prescription_items: (o.items ?? []) as {
         name: string;
         strength: string | null;
         dosage: string | null;

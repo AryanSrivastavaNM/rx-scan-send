@@ -21,6 +21,7 @@ export type ReceiptOrder = {
   id: string;
   created_at: string;
   paid_at?: string | null;
+  patient_id?: string | null;
   patient_name?: string | null;
   doctor_name?: string | null;
   quoted_amount?: number | string | null;
@@ -75,6 +76,7 @@ export function downloadReceipt(order: ReceiptOrder, pharmacy: ReceiptPharmacy) 
   table{width:100%;border-collapse:collapse;margin-top:8px;}
   td{padding:10px 0;border-bottom:1px solid #e5ebf2;font-size:14px;vertical-align:top;}
   .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 16px;margin-top:16px;font-size:13px;}
+  .col-span-2{grid-column:span 2;}
   .total{display:flex;justify-content:space-between;align-items:center;margin-top:20px;padding-top:14px;border-top:2px solid #0B2545;font-size:18px;font-weight:700;}
   h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:#5b6b7f;margin:26px 0 0;}
 </style></head><body><div class="wrap">
@@ -87,9 +89,10 @@ export function downloadReceipt(order: ReceiptOrder, pharmacy: ReceiptPharmacy) 
     <div><div class="muted">Receipt no.</div>${escapeHtml(order.id.slice(0, 8).toUpperCase())}</div>
     <div><div class="muted">Paid on</div>${escapeHtml(when(order.paid_at))}</div>
     <div><div class="muted">Patient</div>${escapeHtml(order.patient_name || "—")}</div>
+    <div><div class="muted">Patient ID</div>${escapeHtml(order.patient_id?.slice(0, 12) || "—")}</div>
     <div><div class="muted">Doctor</div>${escapeHtml(order.doctor_name || "—")}</div>
     <div><div class="muted">Payment ID</div>${escapeHtml(order.razorpay_payment_id ?? "—")}</div>
-    <div><div class="muted">Order ID</div>${escapeHtml(order.razorpay_order_id ?? "—")}</div>
+    <div class="col-span-2"><div class="muted">Order ID</div>${escapeHtml(order.razorpay_order_id ?? "—")}</div>
   </div>
   <h2>Order summary</h2>
   <table>${rows}</table>
@@ -148,7 +151,17 @@ export function PaymentReceiptDialog({
                 <p className="text-muted-foreground">Patient</p>
                 <p className="truncate font-medium">{order.patient_name || "—"}</p>
               </div>
-              <div className="col-span-2 min-w-0">
+              <div className="min-w-0">
+                <p className="text-muted-foreground">Doctor</p>
+                <p className="truncate font-medium">{order.doctor_name || "—"}</p>
+              </div>
+              <div className="min-w-0">
+                <p className="text-muted-foreground">Patient ID</p>
+                <p className="truncate font-mono text-[11px]">
+                  {order.patient_id?.slice(0, 12) || "—"}
+                </p>
+              </div>
+              <div className="min-w-0">
                 <p className="text-muted-foreground">Payment ID</p>
                 <p className="truncate font-mono text-[11px]">{order.razorpay_payment_id ?? "—"}</p>
               </div>
