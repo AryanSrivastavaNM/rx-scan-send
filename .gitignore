@@ -20,6 +20,9 @@ dist-ssr
 .wrangler/
 .dev.vars
 
+# Vercel
+.vercel
+
 # Environment variables (contains real API keys/secrets)
 .env
 .env.*
